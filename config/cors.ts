@@ -8,6 +8,7 @@
 import type { CorsConfig } from '@ioc:Adonis/Core/Cors'
 
 const corsConfig: CorsConfig = {
+  
   /*
   |--------------------------------------------------------------------------
   | Enabled
