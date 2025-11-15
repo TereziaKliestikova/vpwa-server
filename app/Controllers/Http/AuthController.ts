@@ -17,12 +17,25 @@ export default class AuthController {
     return user
   }
 
-  async login({ auth, request }: HttpContextContract) {
-    const email = request.input('email')
-    const password = request.input('password')
+async login({ auth, request, response }: HttpContextContract) {
+  const email = request.input('email')
+  const password = request.input('password')
 
-    return auth.use('api').attempt(email, password)
+  try {
+    const token = await auth.use('api').attempt(email, password)
+    return token
+  } catch (err) {
+    // Tu vieme rozlíšiť neexistujúceho usera vs zlé heslo
+    return response.status(400).send({
+      errors: [
+        {
+          message: 'Invalid email or password'
+        }
+      ]
+    })
   }
+}
+
 
   async logout({ auth }: HttpContextContract) {
     return auth.use('api').logout()
