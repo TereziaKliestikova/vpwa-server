@@ -1,20 +1,35 @@
 import type { HttpContextContract } from '@ioc:Adonis/Core/HttpContext'
-import Channel from 'App/Models/Channel'
 import User from 'App/Models/User'
 import RegisterUserValidator from 'App/Validators/RegisterUserValidator'
 
 export default class AuthController {
-  async register({ request }: HttpContextContract) {
-    // if invalid, exception
+  public async register({ request, response }: HttpContextContract) {
+    try {
     const data = await request.validate(RegisterUserValidator)
     const user = await User.create(data)
-    // join user to general channel
-    const general = await Channel.query().where('name', 'general').first()
-    console.log('general channel found?', general)
-    // const general = await Channel.findByOrFail('name', 'general') // -> tento riadok je neposlusny, neviem preco to nechcelo najst aj ked general existuje 
-    // await user.related('channels').attach([general.id])
 
-    return user
+    return response.created({
+      user: {
+        id: user.id,
+        email: user.email,
+        displayName: user.displayName,
+        avatarUrl: user.avatarUrl,
+      },
+    })
+  } catch (error) {
+    // Ak je to validácia → 400 s chybami
+    if (error.messages) {
+      return response.badRequest({
+        errors: Object.values(error.messages).flat(), // ← plochý zoznam chýb
+      })
+    }
+
+    // Iné chyby
+    console.error('Register error:', error)
+    return response.internalServerError({
+      errors: [{ message: 'Server error' }],
+    })
+  }
   }
 
 async login({ auth, request, response }: HttpContextContract) {
