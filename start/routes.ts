@@ -30,3 +30,7 @@ Route.group(() => {
 Route.get('/', async () => {
   return { message: 'API is running' }
 });
+
+Route.group(() => {
+  Route.get('/channels', 'ChannelsController.index');
+}).prefix('api');
