@@ -31,7 +31,13 @@ export default class RegisterUserValidator {
     password: schema.string({}, [
       rules.minLength(8),
       rules.confirmed('passwordConfirmation')
-    ])
+    ]),
+    firstName: schema.string({ trim: true }),
+    lastName: schema.string({ trim: true }),
+    nickname: schema.string({ trim: true }, [
+      rules.unique({ table: 'users', column: 'nickname' })
+    ]),
+    avatar: schema.string.optional()
   })
   /**
    * Custom messages for validation failures. You can make use of dot notation `(.)`

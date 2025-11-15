@@ -17,6 +17,18 @@ export default class User extends BaseModel {
   public id: number
 
   @column()
+  public firstName: string
+
+  @column()
+  public lastName: string
+
+  @column()
+  public nickname: string 
+
+  @column()
+  public avatar: string | null
+
+  @column()
   public email: string
 
   @column({ serializeAs: null })
@@ -30,6 +42,28 @@ export default class User extends BaseModel {
 
   @column.dateTime({ autoCreate: true, autoUpdate: true })
   public updatedAt: DateTime
+
+  public get displayName(): string {
+    return this.nickname || `${this.firstName} ${this.lastName}`
+  }
+  public get avatarUrl(): string {
+    return this.avatar || 'https://cdn.quasar.dev/img/avatar.png'
+  }
+
+  public serialize() { //lebo mi menilo firstName na first_name a neslo zobrazit v template
+    return {
+      id: this.id,
+      email: this.email,
+      firstName: this.firstName,
+      lastName: this.lastName,
+      nickname: this.nickname,
+      avatar: this.avatar,
+      displayName: this.displayName,
+      avatarUrl: this.avatarUrl,
+      createdAt: this.createdAt,
+      updatedAt: this.updatedAt,
+    }
+  }
 
   @beforeSave()
   public static async hashPassword (user: User) {

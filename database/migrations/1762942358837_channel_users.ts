@@ -26,6 +26,7 @@ export default class extends BaseSchema {
         .references("id")
         .inTable("channels")
         .onDelete("CASCADE");
+      table.boolean('is_admin').defaultTo(false);
       table.unique(["user_id", "channel_id"]);
           })
   }
