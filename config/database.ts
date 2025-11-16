@@ -41,8 +41,16 @@ const databaseConfig: DatabaseConfig = {
       },
       pool: {
         afterCreate: (conn, cb) => {
-          conn.run('PRAGMA foreign_keys=true', cb)
-        }
+          conn.run('PRAGMA foreign_keys = true', () => {
+            conn.run('PRAGMA journal_mode = WAL', (err) => {
+              if (err) console.error('WAL failed:', err)
+              else console.log('WAL mode enabled!')
+              conn.run('PRAGMA synchronous = NORMAL')
+              conn.run('PRAGMA cache_size = -20000')
+              cb(null, conn)
+            })
+          })
+        },
       },
       migrations: {
         naturalSort: true,
