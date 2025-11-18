@@ -60,4 +60,23 @@ async login({ auth, request, response }: HttpContextContract) {
     await auth.user!.load('channels')
     return auth.user
   }
+
+  public async validateNicknames({ request, response }: HttpContextContract) {
+    const { nicknames } = request.only(['nicknames'])
+    
+    if (!nicknames || nicknames.length === 0) {
+      return response.json({ invalidNicknames: [] })
+    }
+
+    const invalidNicknames: string[] = []
+
+    for (const nickname of nicknames) {
+      const user = await User.query().where('nickname', nickname).first()
+      if (!user) {
+        invalidNicknames.push(nickname)
+      }
+    }
+
+    return response.json({ invalidNicknames })
+}
 }
