@@ -98,4 +98,22 @@ export default class ChannelsController {
       isAdmin: true,
     })
   }
+
+  //vrati vseetky channels z databazy, nie iba ktorych je clenom
+  public async all({ response }: HttpContextContract) {
+  // Get ALL channels from DB (no filtering by membership)
+  const channels = await Channel.query()
+    .preload('members', (query) => {
+      query.pivotColumns(['is_admin'])
+    })
+
+  return response.json(
+    channels.map((ch) => ({
+      id: ch.id,
+      name: ch.name,
+      type: ch.type,
+      memberCount: ch.members.length,
+    }))
+  )
+}
 }
