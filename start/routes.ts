@@ -25,6 +25,7 @@ Route.group(() => {
   Route.post('login', 'AuthController.login')
   Route.post('logout', 'AuthController.logout').middleware('auth')
   Route.get('me', 'AuthController.me').middleware('auth')
+  Route.post('validate-nicknames', 'AuthController.validateNicknames')
 }).prefix('auth')
 
 Route.get('/', async () => {
@@ -32,5 +33,7 @@ Route.get('/', async () => {
 });
 
 Route.group(() => {
-  Route.get('/channels', 'ChannelsController.index');
+  Route.get('/channels', 'ChannelsController.index').middleware('auth');
+  Route.post('/channels', 'ChannelsController.create').middleware('auth');
+  Route.get('/channels/all', 'ChannelsController.all').middleware('auth'); 
 }).prefix('api');
