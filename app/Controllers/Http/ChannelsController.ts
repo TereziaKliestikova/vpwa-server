@@ -81,17 +81,14 @@ export default class ChannelsController {
 
   //vrati vseetky channels z databazy, nie iba ktorych je clenom
   public async all({ response }: HttpContextContract) {
-  // Get ALL channels from DB (no filtering by membership)
     const channels = await Channel.query()
-      .preload('members', (query) => {
-        query.pivotColumns(['is_admin'])
-      })
+      .preload('members') // len počet členov, žiadne pivot stĺpce!
 
     return response.json(
       channels.map((ch) => ({
         id: ch.id,
         name: ch.name,
-        type: ch.type,
+        type: ch.type as 'public' | 'private',
         memberCount: ch.members.length,
       }))
     )
@@ -117,5 +114,31 @@ export default class ChannelsController {
     await channel.delete()
     
     return response.ok({ message: 'Channel deleted successfully' })
+  }
+
+  public async leave({ params, response, auth }: HttpContextContract) {
+    const currentUserId = auth.user?.id
+    if (!currentUserId) {
+      return response.unauthorized({ error: 'Not authenticated' })
+    }
+
+    const channel = await Channel.find(params.id)
+    
+    if (!channel) {
+      return response.notFound({ error: 'Channel not found' })
+    }
+
+    // Remove user from channel members
+    await channel.related('members').detach([currentUserId])
+
+    // Check if channel has no more members
+    await channel.load('members')
+    if (channel.members.length === 0) {
+      // Delete channel if empty
+      await channel.delete()
+      return response.ok({ message: 'Channel deleted (last member left)' })
+    }
+
+    return response.ok({ message: 'Left channel successfully' })
   }
 }
