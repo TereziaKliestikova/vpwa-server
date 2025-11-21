@@ -35,5 +35,6 @@ Route.get('/', async () => {
 Route.group(() => {
   Route.get('/channels', 'ChannelsController.index').middleware('auth');
   Route.post('/channels', 'ChannelsController.create').middleware('auth');
-  Route.get('/channels/all', 'ChannelsController.all').middleware('auth'); 
+  Route.get('/channels/all', 'ChannelsController.all').middleware('auth');
+  Route.delete('/channels/:id', 'ChannelsController.destroy').middleware('auth');  
 }).prefix('api');
