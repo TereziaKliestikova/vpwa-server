@@ -1,6 +1,8 @@
 // app/Controllers/Http/ChannelsController.ts
 import Channel from 'App/Models/Channel'
 import type { HttpContextContract } from '@ioc:Adonis/Core/HttpContext'
+import Ws from '@ioc:Ruby184/Socket.IO/Ws'
+import User from 'App/Models/User'
 
 export default class ChannelsController {
   public async index({ response, auth }: HttpContextContract) {
@@ -117,28 +119,50 @@ export default class ChannelsController {
   }
 
   public async leave({ params, response, auth }: HttpContextContract) {
-    const currentUserId = auth.user?.id
-    if (!currentUserId) {
-      return response.unauthorized({ error: 'Not authenticated' })
-    }
-
+    const userId = auth.user!.id
     const channel = await Channel.find(params.id)
-    
-    if (!channel) {
-      return response.notFound({ error: 'Channel not found' })
-    }
+    if (!channel) return response.notFound()
 
-    // Remove user from channel members
-    await channel.related('members').detach([currentUserId])
-
-    // Check if channel has no more members
     await channel.load('members')
+
+    await channel.related('members').detach([userId])
+    await channel.load('members')
+
+    const leavingUser = await User.find(userId)
+
+    // ✅ Emit member:left
+    Ws.io.to(channel.name).emit('member:left', {
+      userId,
+      nickname: leavingUser?.displayName || leavingUser?.email.split('@')[0],
+      avatar: leavingUser?.avatarUrl || '',
+      channelName: channel.name,
+    })
+
+    // ✅ Emit members:update
+    const updatedMembersList = channel.members.map((m) => ({
+      id: m.id,
+      name: m.displayName || m.nickname || m.email.split('@')[0],
+      avatar: m.avatarUrl || '',
+    }))
+
+    Ws.io.to(channel.name).emit('members:update', {
+      channelId: channel.id,
+      members: updatedMembersList,
+    })
+
+    // ✅ Ak je posledný člen, zmaž kanál
     if (channel.members.length === 0) {
-      // Delete channel if empty
+      const channelName = channel.name
       await channel.delete()
-      return response.ok({ message: 'Channel deleted (last member left)' })
+
+      Ws.io.to(channelName).emit('channel:deleted', {
+        channelId: channel.id,
+        channelName,
+      })
+
+      return response.ok({ deleted: true, message: 'Last member left -> channel deleted' })
     }
 
-    return response.ok({ message: 'Left channel successfully' })
+    return response.ok({ deleted: false })
   }
 }
