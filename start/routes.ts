@@ -39,4 +39,5 @@ Route.group(() => {
   Route.delete('/channels/:id', 'ChannelsController.destroy').middleware('auth');  
   Route.post('/channels/:id/leave', 'ChannelsController.leave').middleware('auth');
   Route.get('/users', 'UsersController.index').middleware('auth');
+  Route.post('/channels/:id/kick', 'ChannelsController.kick').middleware('auth');
 }).prefix('api');
