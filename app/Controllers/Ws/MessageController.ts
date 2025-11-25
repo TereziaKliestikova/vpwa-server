@@ -5,6 +5,7 @@ import Channel from "App/Models/Channel";
 import User from "App/Models/User";
 import ChannelInvitation from "App/Models/ChannelInvitation";
 import type { InvitationPayload } from "contracts/invitation";
+import ChannelBan from "App/Models/ChannelBan";
 
 @inject(["Repositories/MessageRepository"])
 export default class MessageController {
@@ -225,6 +226,85 @@ export default class MessageController {
 
   // }
 
+
+//   /**
+//  * Dynamické zmazanie kanála cez WebSockety (náhrada za HTTP destroy)
+//  */
+// public async deleteChannel({ auth }: WsContextContract, channelId: number) {
+//     const currentUserId = auth.user?.id
+//     if (!currentUserId) {
+//       throw new Error('Not authenticated')
+//     }
+
+//     const channel = await Channel.find(channelId)
+    
+//     if (!channel) {
+//       throw new Error('Channel not found')
+//     }
+
+//     // Only creator can delete
+//     if (channel.createdBy !== currentUserId) {
+//       throw new Error('Only the channel creator can delete it')
+//     }
+
+//     const channelName = channel.name
+
+//     await channel.delete()
+    
+//     // ✅ DÔLEŽITÉ: Notifikácia všetkým, ktorí boli v roomke kanála, že bol zmazaný
+//     const Ws = (await import('@ioc:Ruby184/Socket.IO/Ws')).default;
+    
+//     // Použijeme .to(channelName) na odoslanie správy všetkým pripojeným k tomuto kanálu
+//     Ws.io.to(channelName).emit('channel:deleted', {
+//       channelId: channel.id,
+//       channelName: channelName,
+//     });
+    
+//     // Potrebné je tiež notifikovať globálne, aby sa aktualizovali zoznamy VŠETKÝCH kanálov
+//     Ws.io.emit('allChannels:updated'); 
+
+//     // ✅ Vrátime odpoveď pre emitAsync, ktorá sa zobrazí používateľovi, ktorý mazal
+//     return {}
+// }
+
+
+  // app/Controllers/Ws/MessageController.ts
+
+// ... import ChannelBan ...
+// ... import Channel ...
+
+// ... vo vnútri triedy MessageController ...
+
+/**
+ * Kontrola banu pre používateľa v danom kanáli.
+ */
+public async checkBanStatus({ auth }: WsContextContract, channelName: string) {
+    const userId = auth.user!.id;
+
+    const channel = await Channel.query().where('name', channelName).first();
+
+    if (!channel) {
+        // Kanál neexistuje, čo by sa nemalo stať, ak sa frontend pýta správne,
+        // ale pre istotu vrátime 'not_found'.
+        return { status: 'not_found' }; 
+    }
+
+    const isBanned = await ChannelBan.query()
+        .where('channel_id', channel.id)
+        .where('user_id', userId)
+        .first();
+
+    if (isBanned) {
+        return { 
+            status: 'banned', 
+            message: `You are banned from channel "${channelName}"`
+        };
+    }
+
+    // Všetko v poriadku, môže sa pripojiť
+    return { status: 'ok' };
+}
+
   public async leaveChannel({ socket, params, auth }: WsContextContract) {
     const channelName = params.name;
     const user = auth.user!;
@@ -322,7 +402,7 @@ export default class MessageController {
       const isMember = channel.members.some((m) => m.id === user.id);
       if (isMember) continue;
 
-      // Check if already invited
+      //check if its pending
       const existing = await ChannelInvitation.query()
         .where("channel_id", channel.id)
         .where("invited_user_id", user.id)
@@ -469,6 +549,7 @@ export default class MessageController {
       .where("invited_user_id", user.id)
       .where("status", "pending")
       .preload("channel")
+      .preload("inviter")
       .firstOrFail();
 
     invitation.status = "accepted";
@@ -476,6 +557,23 @@ export default class MessageController {
 
     const channel = invitation.channel;
     await channel.load("members");
+
+    //admin unBAN funkcionalita
+    const ChannelBan = (await import('App/Models/ChannelBan')).default;
+    const inviterIsAdmin = (channel.type === "private" && channel.createdBy === invitation.invitedBy) 
+                           || channel.createdBy === invitation.invitedBy; 
+    
+    // Skontrolujeme, či má pozvaný ban
+    const banRecord = await ChannelBan.query()
+        .where('channel_id', channel.id)
+        .where('user_id', user.id)
+        .first();
+
+    if (inviterIsAdmin && banRecord) {
+        // Ak je pozývateľ admin a používateľ má ban:
+        await banRecord.delete(); // 💥 VYMAZANIE BANU!
+        console.log(`UNBAN: User ${user.nickname} unbanned from #${channel.name} via admin invitation.`);
+    }
 
     // Pridaj do členov
     const wasAlreadyMember = channel.members.some(m => m.id === user.id);

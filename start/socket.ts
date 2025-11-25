@@ -17,8 +17,10 @@ Ws.namespace('channels/:name')
   .on('loadMessages', 'MessageController.loadMessages')
   .on('addMessage', 'MessageController.addMessage')
   .on('leaveChannel', 'MessageController.leaveChannel')
-  .on('inviteUsers', 'MessageController.inviteUsers')           // UPDATED
-  .on('revokeUser', 'MessageController.revokeUser')             // NEW
+  .on('inviteUsers', 'MessageController.inviteUsers')          
+  .on('revokeUser', 'MessageController.revokeUser')             
   .on('acceptInvitation', 'MessageController.acceptInvitation')
   .on('declineInvitation', 'MessageController.declineInvitation')
   .on('getInvitations', 'MessageController.getInvitations')
+  // .on("deleteChannel", "MessageController.deleteChannel"); 
+  .on('checkBanStatus', 'MessageController.checkBanStatus')
