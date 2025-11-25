@@ -188,42 +188,94 @@ export default class MessageController {
   }
 
   // NOVÁ METÓDA: leaveChannel
+  // public async leaveChannel({ socket, params, auth }: WsContextContract) {
+  //   const channelName = params.name;
+  //   const user = auth.user!;
+
+  //   const channel = await Channel.findByOrFail("name", channelName);
+    
+  //   await channel.related("members").detach([user.id]);
+  //   await channel.load("members");
+
+  //   const updatedMembersList = channel.members.map((m) => ({
+  //     id: m.id,
+  //     name: m.displayName || m.nickname || m.email.split("@")[0],
+  //     avatar: m.avatarUrl || "",
+  //   }));
+
+  //   socket.nsp.to(channelName).emit("members:update", {
+  //     channelId: channel.id,
+  //     members: updatedMembersList,
+  //   });
+
+  //   // ✅ POTOM emit member:left
+  //   socket.nsp.to(channelName).emit("member:left", {
+  //     userId: user.id,
+  //     nickname: user.displayName || user.email.split("@")[0],
+  //     avatar: user.avatarUrl || "",
+  //     channelName,
+  //   });
+
+  //   // disconnect socket
+  //   // socket.leave(channelName);
+    
+  //   console.log(`USER LEFT via socket: ${user.email} → #${channelName}`);
+    
+  //   return { success: true };   
+
+  // }
+
   public async leaveChannel({ socket, params, auth }: WsContextContract) {
     const channelName = params.name;
     const user = auth.user!;
+    const userId = user.id;
 
     const channel = await Channel.findByOrFail("name", channelName);
-    
-    await channel.related("members").detach([user.id]);
     await channel.load("members");
 
-    const updatedMembersList = channel.members.map((m) => ({
+    if (!channel.members.some(m => m.id === userId)) {
+      return { success: true };
+    }
+
+    await channel.related("members").detach([userId]);
+    await channel.load("members");
+
+    console.log(`USER LEFT: ${user.email} → #${channelName}`);
+
+    const updatedMembersList = channel.members.map(m => ({
       id: m.id,
       name: m.displayName || m.nickname || m.email.split("@")[0],
       avatar: m.avatarUrl || "",
     }));
 
-    socket.nsp.to(channelName).emit("members:update", {
+    // Všetci v roome (vrátane admina) dostanú update
+    socket.nsp.in(channelName).emit("members:update", {
       channelId: channel.id,
       members: updatedMembersList,
     });
 
-    // ✅ POTOM emit member:left
-    socket.nsp.to(channelName).emit("member:left", {
-      userId: user.id,
-      nickname: user.displayName || user.email.split("@")[0],
+    socket.nsp.in(channelName).emit("member:left", {
+      userId,
+      nickname: user.displayName || user.nickname || user.email.split("@")[0],
       avatar: user.avatarUrl || "",
       channelName,
     });
 
-    // disconnect socket
-    socket.leave(channelName);
-    
     console.log(`USER LEFT via socket: ${user.email} → #${channelName}`);
-    
-    return { success: true };   
 
-  }
+    // Ak je posledný člen, zmaž kanál a emitni channel:deleted
+    if (channel.members.length === 0) {
+      const channelId = channel.id;
+      await channel.delete();
+
+      // Emitni všetkým (aj tým, čo už odišli)
+      socket.nsp.in(channelName).emit('channel:deleted', {
+        channelId,
+        channelName,
+      });
+
+      return { success: true };
+    }}
 
    /**
    * Invite users to a channel
@@ -378,12 +430,23 @@ export default class MessageController {
 
     // Notify removed user
     const Ws = (await import('@ioc:Ruby184/Socket.IO/Ws')).default;
+    channel.members.forEach((member) => {
+      Ws.io.emit("members:update:global", {
+        userId: member.id,
+        channelId: channel.id,
+        channelName: channel.name,
+        members: updatedMembersList,
+      });
+    });
+
+    // Notify removed user
     Ws.io.emit("user:removed", {
       userId: userToRemove.id,
       channelId: channel.id,
       channelName: channel.name,
       removedBy: currentUser.displayName || currentUser.nickname,
     });
+
 
     return {
       success: true,
@@ -394,12 +457,13 @@ export default class MessageController {
   /**
    * User accepts invitation
    */
+
   public async acceptInvitation(
-    { auth, socket }: WsContextContract,
+    {params, auth, socket }: WsContextContract,
     invitationId: number
   ) {
     const user = auth.user!;
-
+    const channelName = params.name;
     const invitation = await ChannelInvitation.query()
       .where("id", invitationId)
       .where("invited_user_id", user.id)
@@ -407,38 +471,45 @@ export default class MessageController {
       .preload("channel")
       .firstOrFail();
 
-    // Update invitation status
     invitation.status = "accepted";
     await invitation.save();
 
     const channel = invitation.channel;
-
-    // Add user to channel
-    await channel.related("members").attach([user.id]);
     await channel.load("members");
 
-    // Join socket room
-    socket.join(channel.name);
+    // Pridaj do členov
+    const wasAlreadyMember = channel.members.some(m => m.id === user.id);
+    if (!wasAlreadyMember) {
+      await channel.related("members").attach([user.id]);
+      await channel.load("members");
+    }
 
-    // Emit updated members list to everyone in channel
+    // KĽÚČOVÉ: Pripoj socket do roomu (ako keby volal joinChannel)
+    socket.join(channelName);
+    console.log(`SOCKET JOINED ROOM via acceptInvitation: ${user.email} → #${channel.name}`);
+
+    // Emitni update všetkým v kanáli (vrátane nového člena a admina)
     const updatedMembersList = channel.members.map((m) => ({
       id: m.id,
       name: m.displayName || m.nickname || m.email.split("@")[0],
       avatar: m.avatarUrl || "",
     }));
 
-    socket.nsp.to(channel.name).emit("members:update", {
+    // Použi .in() aby to dostal aj nový člen
+    socket.nsp.in(channel.name).emit("members:update", {
       channelId: channel.id,
       members: updatedMembersList,
     });
 
-    // Notify everyone that user joined
-    socket.nsp.to(channel.name).emit("member:joined", {
+    // Voliteľné: emitni member:joined
+    socket.nsp.in(channel.name).emit("member:joined", {
       userId: user.id,
-      nickname: user.displayName || user.nickname,
-      avatar: user.avatarUrl,
+      nickname: user.displayName || user.nickname || user.email.split("@")[0],
+      avatar: user.avatarUrl || "",
       channelName: channel.name,
     });
+
+    console.log(`USER JOINED (via invitation): ${user.email} → #${channel.name}`);
 
     return {
       success: true,
@@ -450,6 +521,76 @@ export default class MessageController {
       },
     };
   }
+  
+  
+  //   public async acceptInvitation(
+  //   { auth, socket }: WsContextContract,
+  //   invitationId: number
+  // ) {
+  //   const user = auth.user!;
+
+  //   const invitation = await ChannelInvitation.query()
+  //     .where("id", invitationId)
+  //     .where("invited_user_id", user.id)
+  //     .where("status", "pending")
+  //     .preload("channel")
+  //     .firstOrFail();
+
+  //   // Update invitation status
+  //   invitation.status = "accepted";
+  //   await invitation.save();
+
+  //   const channel = invitation.channel;
+
+  //   // Add user to channel
+  //   await channel.related("members").attach([user.id]);
+  //   await channel.load("members");
+
+  //   // Join socket room
+  //   socket.join(channel.name);
+
+  //   // Emit updated members list to everyone in channel
+  //   const updatedMembersList = channel.members.map((m) => ({
+  //     id: m.id,
+  //     name: m.displayName || m.nickname || m.email.split("@")[0],
+  //     avatar: m.avatarUrl || "",
+  //   }));
+
+  //   // ✅ EMIT do room (pre pripojených cez WS)
+  //   socket.nsp.to(channel.name).emit("members:update", {
+  //     channelId: channel.id,
+  //     members: updatedMembersList,
+  //   });
+
+  //   // ✅ EMIT GLOBÁLNE pre všetkých členov kanála
+  //   const Ws = (await import('@ioc:Ruby184/Socket.IO/Ws')).default;
+  //   channel.members.forEach((member) => {
+  //     Ws.io.emit("members:update:global", {
+  //       userId: member.id,
+  //       channelId: channel.id,
+  //       channelName: channel.name,
+  //       members: updatedMembersList,
+  //     });
+  //   });
+
+  //   // Notify everyone that user joined
+  //   socket.nsp.to(channel.name).emit("member:joined", {
+  //     userId: user.id,
+  //     nickname: user.displayName || user.nickname,
+  //     avatar: user.avatarUrl,
+  //     channelName: channel.name,
+  //   });
+
+  //   return {
+  //     success: true,
+  //     channel: {
+  //       id: channel.id,
+  //       name: channel.name,
+  //       type: channel.type,
+  //       isAdmin: channel.createdBy === user.id,
+  //     },
+  //   };
+  // }
 
   /**
    * User declines invitation
