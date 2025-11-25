@@ -1,9 +1,10 @@
-// app/Controllers/Ws/MessageController.ts
 import type { WsContextContract } from "@ioc:Ruby184/Socket.IO/WsContext";
 import type { MessageRepositoryContract } from "@ioc:Repositories/MessageRepository";
 import { inject } from "@adonisjs/core/build/standalone";
 import Channel from "App/Models/Channel";
-// import User from "App/Models/User";
+import User from "App/Models/User";
+import ChannelInvitation from "App/Models/ChannelInvitation";
+import type { InvitationPayload } from "contracts/invitation";
 
 @inject(["Repositories/MessageRepository"])
 export default class MessageController {
@@ -193,14 +194,9 @@ export default class MessageController {
 
     const channel = await Channel.findByOrFail("name", channelName);
     
-    // ✅ NAJPRV disconnect socket
-    socket.leave(channelName);
-    
-    // ✅ POTOM detach user
     await channel.related("members").detach([user.id]);
     await channel.load("members");
 
-    // ✅ Emit members:update PRED member:left
     const updatedMembersList = channel.members.map((m) => ({
       id: m.id,
       name: m.displayName || m.nickname || m.email.split("@")[0],
@@ -220,10 +216,281 @@ export default class MessageController {
       channelName,
     });
 
+    // disconnect socket
+    socket.leave(channelName);
+    
     console.log(`USER LEFT via socket: ${user.email} → #${channelName}`);
     
-    // ✅ Vráť success
     return { success: true };   
 
+  }
+
+   /**
+   * Invite users to a channel
+   * - Private: only admin can invite
+   * - Public: any member can invite
+   */
+  public async inviteUsers(
+    { params, auth, socket }: WsContextContract,
+    nicknames: string[]
+  ) {
+    const channelName = params.name;
+    const currentUser = auth.user!;
+
+    const channel = await Channel.findByOrFail("name", channelName);
+    await channel.load("members");
+
+    // Check if user is a member
+    const isMember = channel.members.some((m) => m.id === currentUser.id);
+    if (!isMember) {
+      throw new Error("You must be a member to invite users");
+    }
+
+    // Check permissions
+    if (channel.type === "private") {
+      // Private: only admin can invite
+      if (channel.createdBy !== currentUser.id) {
+        throw new Error("Only admin can invite users to private channels");
+      }
+    }
+    // Public: any member can invite (no additional check needed)
+
+    const invitedUsers = await User.query().whereIn("nickname", nicknames);
+
+    if (invitedUsers.length === 0) {
+      throw new Error("No valid users found");
+    }
+
+    const invitations : InvitationPayload[] = [];
+    const Ws = (await import('@ioc:Ruby184/Socket.IO/Ws')).default;
+
+    for (const user of invitedUsers) {
+      // Check if already a member
+      await channel.load("members");
+      const isMember = channel.members.some((m) => m.id === user.id);
+      if (isMember) continue;
+
+      // Check if already invited
+      const existing = await ChannelInvitation.query()
+        .where("channel_id", channel.id)
+        .where("invited_user_id", user.id)
+        .where("status", "pending")
+        .first();
+
+      if (existing) continue;
+
+      // Create invitation
+      const invitation = await ChannelInvitation.create({
+        channelId: channel.id,
+        invitedUserId: user.id,
+        invitedBy: currentUser.id,
+        status: "pending",
+      });
+
+      await invitation.load("channel");
+      await invitation.load("inviter");
+
+      invitations.push({
+        id: invitation.id,
+        channelId: channel.id,
+        channelName: channel.name,
+        channelType: channel.type,
+        from: currentUser.displayName || currentUser.nickname,
+        fromAvatar: currentUser.avatarUrl,
+        createdAt: invitation.createdAt,
+      });
+
+      // Emit globally to reach user on any socket
+      Ws.io.emit("invitation:received", {
+        userId: user.id, // Target user
+        id: invitation.id,
+        channelId: channel.id,
+        channelName: channel.name,
+        channelType: channel.type,
+        from: currentUser.displayName || currentUser.nickname,
+        fromAvatar: currentUser.avatarUrl,
+        createdAt: invitation.createdAt,
+      });
+    }
+
+    return {
+      success: true,
+      invitationsSent: invitations.length,
+      invitations,
+    };
+  }
+
+  /**
+   * Revoke/Remove user from channel (admin only for private channels)
+   */
+  public async revokeUser(
+    { params, auth, socket }: WsContextContract,
+    nickname: string
+  ) {
+    const channelName = params.name;
+    const currentUser = auth.user!;
+
+    const channel = await Channel.findByOrFail("name", channelName);
+    await channel.load("members");
+
+    // Only admin can revoke in private channels
+    if (channel.type === "private" && channel.createdBy !== currentUser.id) {
+      throw new Error("Only admin can remove users from private channels");
+    }
+
+    // Find user to remove
+    const userToRemove = await User.query().where("nickname", nickname).first();
+    if (!userToRemove) {
+      throw new Error("User not found");
+    }
+
+    // Check if user is member
+    const isMember = channel.members.some((m) => m.id === userToRemove.id);
+    if (!isMember) {
+      throw new Error("User is not a member of this channel");
+    }
+
+    // Cannot remove yourself
+    if (userToRemove.id === currentUser.id) {
+      throw new Error("Use /cancel to leave the channel");
+    }
+
+    // Cannot remove admin
+    if (userToRemove.id === channel.createdBy) {
+      throw new Error("Cannot remove channel admin");
+    }
+
+    // Remove user
+    await channel.related("members").detach([userToRemove.id]);
+    await channel.load("members");
+
+    // Update members list
+    const updatedMembersList = channel.members.map((m) => ({
+      id: m.id,
+      name: m.displayName || m.nickname || m.email.split("@")[0],
+      avatar: m.avatarUrl || "",
+    }));
+
+    socket.nsp.to(channelName).emit("members:update", {
+      channelId: channel.id,
+      members: updatedMembersList,
+    });
+
+    // Notify removed user
+    const Ws = (await import('@ioc:Ruby184/Socket.IO/Ws')).default;
+    Ws.io.emit("user:removed", {
+      userId: userToRemove.id,
+      channelId: channel.id,
+      channelName: channel.name,
+      removedBy: currentUser.displayName || currentUser.nickname,
+    });
+
+    return {
+      success: true,
+      message: `${userToRemove.displayName || userToRemove.nickname} removed from channel`,
+    };
+  }
+
+  /**
+   * User accepts invitation
+   */
+  public async acceptInvitation(
+    { auth, socket }: WsContextContract,
+    invitationId: number
+  ) {
+    const user = auth.user!;
+
+    const invitation = await ChannelInvitation.query()
+      .where("id", invitationId)
+      .where("invited_user_id", user.id)
+      .where("status", "pending")
+      .preload("channel")
+      .firstOrFail();
+
+    // Update invitation status
+    invitation.status = "accepted";
+    await invitation.save();
+
+    const channel = invitation.channel;
+
+    // Add user to channel
+    await channel.related("members").attach([user.id]);
+    await channel.load("members");
+
+    // Join socket room
+    socket.join(channel.name);
+
+    // Emit updated members list to everyone in channel
+    const updatedMembersList = channel.members.map((m) => ({
+      id: m.id,
+      name: m.displayName || m.nickname || m.email.split("@")[0],
+      avatar: m.avatarUrl || "",
+    }));
+
+    socket.nsp.to(channel.name).emit("members:update", {
+      channelId: channel.id,
+      members: updatedMembersList,
+    });
+
+    // Notify everyone that user joined
+    socket.nsp.to(channel.name).emit("member:joined", {
+      userId: user.id,
+      nickname: user.displayName || user.nickname,
+      avatar: user.avatarUrl,
+      channelName: channel.name,
+    });
+
+    return {
+      success: true,
+      channel: {
+        id: channel.id,
+        name: channel.name,
+        type: channel.type,
+        isAdmin: channel.createdBy === user.id,
+      },
+    };
+  }
+
+  /**
+   * User declines invitation
+   */
+  public async declineInvitation(
+    { auth }: WsContextContract,
+    invitationId: number
+  ) {
+    const user = auth.user!;
+
+    const invitation = await ChannelInvitation.query()
+      .where("id", invitationId)
+      .where("invited_user_id", user.id)
+      .where("status", "pending")
+      .firstOrFail();
+
+    invitation.status = "declined";
+    await invitation.save();
+
+    return { success: true };
+  }
+
+  /**
+   * Get pending invitations for current user
+   */
+  public async getInvitations({ auth }: WsContextContract) {
+    const user = auth.user!;
+
+    const invitations = await ChannelInvitation.query()
+      .where("invited_user_id", user.id)
+      .where("status", "pending")
+      .preload("channel")
+      .preload("inviter");
+
+    return invitations.map((inv) => ({
+      id: inv.id,
+      channelId: inv.channel.id,
+      channelName: inv.channel.name,
+      from: inv.inviter.displayName || inv.inviter.nickname,
+      fromAvatar: inv.inviter.avatarUrl,
+      createdAt: inv.createdAt,
+    }));
   }
 }
